@@ -1,0 +1,141 @@
+name: Release Web App + Obsidian Plugin
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+      - '*.*.*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Tag to release (example: v1.2.3 or 1.2.3)'
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.tag || github.ref }}
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Resolve tag and version
+        id: vars
+        shell: bash
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            TAG="${{ github.event.inputs.tag }}"
+          else
+            TAG="${GITHUB_REF_NAME}"
+          fi
+          VERSION="${TAG#v}"
+          if [[ ! "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+([-.][0-9A-Za-z.-]+)?$ ]]; then
+            echo "Invalid version tag: $TAG"
+            exit 1
+          fi
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Ensure manifest version matches tag
+        shell: bash
+        run: |
+          VERSION="${{ steps.vars.outputs.version }}"
+          MANIFEST_VERSION="$(node -e "const fs=require('fs');const m=JSON.parse(fs.readFileSync('obsidian-module/manifest.json','utf8'));process.stdout.write(m.version||'')")"
+          if [ "$MANIFEST_VERSION" != "$VERSION" ]; then
+            echo "obsidian-module/manifest.json version ($MANIFEST_VERSION) must match tag version ($VERSION)"
+            exit 1
+          fi
+
+      - name: Build web + obsidian bundle
+        run: npm run build:obsidian
+
+      - name: Package release artifacts
+        shell: bash
+        run: |
+          TAG="${{ steps.vars.outputs.tag }}"
+          mkdir -p release
+
+          # Web app package
+          cp -r dist "release/arxiv-studio-web-${TAG}"
+          (cd release && zip -r "arxiv-studio-web-${TAG}.zip" "arxiv-studio-web-${TAG}" >/dev/null)
+
+          # Obsidian plugin package
+          mkdir -p "release/arxiv-studio-obsidian-${TAG}"
+          cp obsidian-module/manifest.json "release/arxiv-studio-obsidian-${TAG}/manifest.json"
+          cp obsidian-module/main.js "release/arxiv-studio-obsidian-${TAG}/main.js"
+          cp obsidian-module/styles.css "release/arxiv-studio-obsidian-${TAG}/styles.css"
+          cp -r obsidian-module/webapp "release/arxiv-studio-obsidian-${TAG}/webapp"
+          (cd release && zip -r "arxiv-studio-obsidian-${TAG}.zip" "arxiv-studio-obsidian-${TAG}" >/dev/null)
+
+          # Also publish raw plugin files for direct Obsidian install
+          cp obsidian-module/manifest.json release/manifest.json
+          cp obsidian-module/main.js release/main.js
+          cp obsidian-module/styles.css release/styles.css
+
+          # BRAT / Community compatibility metadata
+          node -e "const fs=require('fs');const m=JSON.parse(fs.readFileSync('obsidian-module/manifest.json','utf8'));const out={};out[m.version]=m.minAppVersion||'0.0.0';fs.writeFileSync('release/versions.json',JSON.stringify(out,null,2));"
+
+      - name: Build commit details
+        id: notes
+        shell: bash
+        run: |
+          TAG="${{ steps.vars.outputs.tag }}"
+          VERSION="${{ steps.vars.outputs.version }}"
+          PREV_TAG="$(git describe --tags --abbrev=0 "${TAG}^" 2>/dev/null || true)"
+          {
+            echo "# ArXiv Studio ${TAG}"
+            echo
+            echo "## Version"
+            echo "- ${VERSION}"
+            echo
+            echo "## Commit Details"
+            if [ -n "$PREV_TAG" ]; then
+              echo "- Range: ${PREV_TAG}..${TAG}"
+              echo
+              git log --pretty=format:'- `%h` %s _(by %an)_' "${PREV_TAG}..${TAG}"
+            else
+              echo "- First tagged release"
+              echo
+              git log --pretty=format:'- `%h` %s _(by %an)_'
+            fi
+            echo
+            echo
+            echo "## Artifacts"
+            echo "- arxiv-studio-web-${TAG}.zip"
+            echo "- arxiv-studio-obsidian-${TAG}.zip"
+            echo "- manifest.json / main.js / styles.css / versions.json"
+            echo
+            echo "## BRAT Compatibility"
+            echo "- Release includes: manifest.json, main.js, styles.css (required by BRAT)"
+            echo "- versions.json included for Obsidian plugin ecosystem compatibility"
+          } > release/release-notes.md
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.vars.outputs.tag }}
+          name: ArXiv Studio ${{ steps.vars.outputs.tag }}
+          body_path: release/release-notes.md
+          files: |
+            release/arxiv-studio-web-${{ steps.vars.outputs.tag }}.zip
+            release/arxiv-studio-obsidian-${{ steps.vars.outputs.tag }}.zip
+            release/manifest.json
+            release/main.js
+            release/styles.css
+            release/versions.json
