@@ -288,13 +288,13 @@ class ArxivStudioAppView extends ItemView {
   }
 
   async bootstrapEmbeddedWebappFromRemote() {
-    const candidates = [
-      (this.plugin.settings.webappBootstrapUrl || '').trim(),
-      (this.plugin.settings.remoteUrl || '').trim(),
-    ].filter(Boolean);
+    const explicitBootstrap = (this.plugin.settings.webappBootstrapUrl || '').trim();
+    const remoteFallback = (this.plugin.settings.remoteUrl || '').trim();
+    const candidates = [explicitBootstrap, remoteFallback].filter(Boolean);
 
     for (const base of candidates) {
       if (!/^https?:\/\//i.test(base)) continue;
+      if (!explicitBootstrap && isLocalhostHttpUrl(base)) continue;
       try {
         const downloaded = await this.downloadWebappTree(base);
         if (downloaded) {
@@ -1611,4 +1611,15 @@ function extractRelativeRefsFromText(text: string, currentUrl: URL, baseUrl: URL
   }
 
   return Array.from(refs);
+}
+
+function isLocalhostHttpUrl(value: string) {
+  try {
+    const url = new URL(value);
+    if (url.protocol !== 'http:' && url.protocol !== 'https:') return false;
+    const host = (url.hostname || '').toLowerCase();
+    return host === 'localhost' || host === '127.0.0.1' || host === '::1';
+  } catch {
+    return false;
+  }
 }
