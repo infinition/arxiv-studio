@@ -11,6 +11,8 @@ export const DEFAULT_SETTINGS: Settings = {
   showGuides: true,
   gridStyle: 'dots',
   gridSize: 10,
+  gridOpacity: 18,
+  gridThickness: 1,
   zoom: 100,
   paperTextureGlobal: null,
   defaultFont: DEFAULT_FONT_STACK,

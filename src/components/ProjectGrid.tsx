@@ -1,7 +1,15 @@
 import { useState } from 'react';
-import { Plus, Copy, Trash2, FileText, Upload, FolderOpen, Moon, Sun } from 'lucide-react';
+import { Plus, Copy, Trash2, FileText, Upload, FolderOpen, Moon, Sun, HardDrive, FolderSymlink } from 'lucide-react';
 import type { Project } from '../types';
 import { getProjects, createProject, deleteProject, duplicateProject, importProjectJson } from '../store/workspace';
+import {
+  getWebFolderMirrorEnabled,
+  getWebFolderMirrorFolderName,
+  isWebFolderMirrorSupported,
+  pickWebFolderMirrorDirectory,
+  queueWebFolderMirrorWrite,
+  setWebFolderMirrorEnabled,
+} from '../store/webFolderMirror';
 
 interface Props {
   onOpen: (id: string) => void;
@@ -13,6 +21,9 @@ export default function ProjectGrid({ onOpen, dark, toggleTheme }: Props) {
   const [projects, setProjects] = useState<Project[]>(getProjects);
   const [showNew, setShowNew] = useState(false);
   const [newName, setNewName] = useState('');
+  const [webFolderMirrorSupported] = useState<boolean>(isWebFolderMirrorSupported());
+  const [webFolderMirrorEnabled, setWebFolderMirrorEnabledState] = useState<boolean>(getWebFolderMirrorEnabled());
+  const [webFolderMirrorFolder, setWebFolderMirrorFolder] = useState<string>(getWebFolderMirrorFolderName());
 
   const refresh = () => setProjects(getProjects());
 
@@ -60,6 +71,33 @@ export default function ProjectGrid({ onOpen, dark, toggleTheme }: Props) {
     input.click();
   };
 
+  const handleToggleWebMirror = async () => {
+    const next = !webFolderMirrorEnabled;
+    setWebFolderMirrorEnabled(next);
+    setWebFolderMirrorEnabledState(next);
+    if (next && !webFolderMirrorFolder) {
+      const picked = await pickWebFolderMirrorDirectory();
+      if (!picked.ok) {
+        setWebFolderMirrorEnabled(false);
+        setWebFolderMirrorEnabledState(false);
+        if (picked.message) alert(picked.message);
+        return;
+      }
+      setWebFolderMirrorFolder(picked.folderName);
+    }
+    if (next) queueWebFolderMirrorWrite(getProjects());
+  };
+
+  const handlePickWebMirrorFolder = async () => {
+    const picked = await pickWebFolderMirrorDirectory();
+    if (!picked.ok) {
+      if (picked.message) alert(picked.message);
+      return;
+    }
+    setWebFolderMirrorFolder(picked.folderName);
+    if (webFolderMirrorEnabled) queueWebFolderMirrorWrite(getProjects());
+  };
+
   const formatDate = (ts: number) => new Date(ts).toLocaleDateString('en-US', {
     month: 'short', day: 'numeric', year: 'numeric', hour: '2-digit', minute: '2-digit',
   });
@@ -74,6 +112,32 @@ export default function ProjectGrid({ onOpen, dark, toggleTheme }: Props) {
             <h1 className="text-xl font-bold" style={{ color: 'var(--text-primary)' }}>ArXiv Studio</h1>
           </div>
           <div className="flex items-center gap-2">
+            {webFolderMirrorSupported && (
+              <>
+                <button
+                  onClick={handleToggleWebMirror}
+                  className="flex items-center gap-2 px-3 py-2 rounded-lg text-sm transition-colors cursor-pointer"
+                  style={{ color: webFolderMirrorEnabled ? '#22c55e' : 'var(--text-secondary)' }}
+                  onMouseEnter={(e) => e.currentTarget.style.background = 'var(--hover-bg)'}
+                  onMouseLeave={(e) => e.currentTarget.style.background = 'transparent'}
+                  title="Also save projects.json to a local folder (File System Access API)"
+                >
+                  <HardDrive className="w-4 h-4" />
+                  {webFolderMirrorEnabled ? 'Folder Mirror ON' : 'Folder Mirror OFF'}
+                </button>
+                <button
+                  onClick={handlePickWebMirrorFolder}
+                  className="flex items-center gap-2 px-3 py-2 rounded-lg text-sm transition-colors cursor-pointer"
+                  style={{ color: 'var(--text-secondary)' }}
+                  onMouseEnter={(e) => e.currentTarget.style.background = 'var(--hover-bg)'}
+                  onMouseLeave={(e) => e.currentTarget.style.background = 'transparent'}
+                  title="Select local folder for projects.json mirror"
+                >
+                  <FolderSymlink className="w-4 h-4" />
+                  {webFolderMirrorFolder ? `Folder: ${webFolderMirrorFolder}` : 'Choose Folder'}
+                </button>
+              </>
+            )}
             <button
               onClick={handleImport}
               className="flex items-center gap-2 px-3 py-2 rounded-lg text-sm transition-colors cursor-pointer"

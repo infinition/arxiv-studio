@@ -30,6 +30,17 @@ const insertButtons: { type: ElementType; icon: typeof Type; label: string; over
 
 export default function Toolbar({ onAdd, onAddPreset, settings, onUpdateSettings, onFitPage }: Props) {
   const btnClass = "flex items-center gap-1 px-2 py-1.5 rounded-md text-xs font-medium cursor-pointer transition-colors";
+  const boostGridVisibility = () => {
+    if (settings.gridOpacity < 35) {
+      onUpdateSettings({ gridOpacity: 50, gridThickness: Math.max(1.5, settings.gridThickness), snapToGrid: true });
+      return;
+    }
+    if (settings.gridOpacity < 70) {
+      onUpdateSettings({ gridOpacity: 80, gridThickness: Math.max(2.5, settings.gridThickness), snapToGrid: true });
+      return;
+    }
+    onUpdateSettings({ gridOpacity: 18, gridThickness: 1 });
+  };
 
   return (
     <div
@@ -96,6 +107,17 @@ export default function Toolbar({ onAdd, onAddPreset, settings, onUpdateSettings
           title={`Grid style: ${settings.gridStyle}`}
         >
           <Grid2x2 className="w-3.5 h-3.5" />
+        </button>
+        <button
+          onClick={boostGridVisibility}
+          className={btnClass}
+          style={{ color: settings.snapToGrid ? 'var(--selected-border)' : 'var(--text-secondary)' }}
+          onMouseEnter={(e) => e.currentTarget.style.background = 'var(--hover-bg)'}
+          onMouseLeave={(e) => e.currentTarget.style.background = 'transparent'}
+          title={`Boost grid visibility (opacity ${settings.gridOpacity}%, thickness ${settings.gridThickness}px)`}
+        >
+          <Grid3x3 className="w-3.5 h-3.5" />
+          <span className="hidden sm:inline">Grid+</span>
         </button>
 
         <button

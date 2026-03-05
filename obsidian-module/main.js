@@ -31,6 +31,8 @@ var VAULT_MIRROR_FILENAME = "projects.json";
 var DEFAULT_SETTINGS = {
   runtime: "embedded",
   remoteUrl: "http://localhost:5173",
+  autoDownloadMissingWebapp: true,
+  webappBootstrapUrl: "",
   provider: "local",
   providerVaultPath: "vaults/arxiv",
   providerToken: "",
@@ -144,6 +146,7 @@ var ArxivStudioAppView = class extends import_obsidian.ItemView {
     __publicField(this, "frameProjectsWaiters", []);
     __publicField(this, "providerLastPayload", "");
     __publicField(this, "providerNoticeShown", false);
+    __publicField(this, "webappBootstrapPromise", null);
     this.plugin = plugin;
   }
   getViewType() {
@@ -201,6 +204,12 @@ var ArxivStudioAppView = class extends import_obsidian.ItemView {
     let src = null;
     if (this.plugin.settings.runtime === "embedded") {
       src = await this.plugin.resolveEmbeddedIndexUrl();
+      if (!src && this.plugin.settings.autoDownloadMissingWebapp) {
+        const bootstrapped = await this.ensureEmbeddedWebappFromRemote();
+        if (bootstrapped) {
+          src = await this.plugin.resolveEmbeddedIndexUrl();
+        }
+      }
       if (!src) {
         const fallback = this.plugin.settings.remoteUrl?.trim();
         if (fallback) {
@@ -224,6 +233,82 @@ var ArxivStudioAppView = class extends import_obsidian.ItemView {
       this.setStatus("Remote app loaded.");
     }
     this.iframe.src = src;
+  }
+  async ensureEmbeddedWebappFromRemote() {
+    if (this.webappBootstrapPromise) return this.webappBootstrapPromise;
+    this.webappBootstrapPromise = this.bootstrapEmbeddedWebappFromRemote().finally(() => {
+      this.webappBootstrapPromise = null;
+    });
+    return this.webappBootstrapPromise;
+  }
+  async bootstrapEmbeddedWebappFromRemote() {
+    const candidates = [
+      (this.plugin.settings.webappBootstrapUrl || "").trim(),
+      (this.plugin.settings.remoteUrl || "").trim()
+    ].filter(Boolean);
+    for (const base of candidates) {
+      if (!/^https?:\/\//i.test(base)) continue;
+      try {
+        const downloaded = await this.downloadWebappTree(base);
+        if (downloaded) {
+          new import_obsidian.Notice("ArXiv Studio: embedded webapp downloaded from remote source.");
+          return true;
+        }
+      } catch (e) {
+        this.setStatus(`Webapp bootstrap failed: ${String(e)}`);
+      }
+    }
+    return false;
+  }
+  getPluginInstallFolderName() {
+    const dir = this.plugin.manifest.dir;
+    if (dir) {
+      const tail = dir.split("/").filter(Boolean).pop();
+      if (tail) return tail;
+    }
+    return this.plugin.manifest.id;
+  }
+  async downloadWebappTree(baseUrlRaw) {
+    const baseUrl = ensureTrailingSlash(baseUrlRaw);
+    const base = new URL(baseUrl);
+    const queue = ["embedded.html", "index.html"];
+    const seen = /* @__PURE__ */ new Set();
+    const payloads = /* @__PURE__ */ new Map();
+    const decoder = new TextDecoder();
+    while (queue.length > 0) {
+      const rel = sanitizeRelPath(queue.shift() || "");
+      if (!rel || seen.has(rel)) continue;
+      seen.add(rel);
+      const url = new URL(rel, base);
+      const res = await fetch(url.toString(), { cache: "no-store" });
+      if (!res.ok) {
+        if (rel === "embedded.html" || rel === "index.html") continue;
+        throw new Error(`HTTP ${res.status} while fetching ${url.toString()}`);
+      }
+      const buf = await res.arrayBuffer();
+      payloads.set(rel, buf);
+      if (!isLikelyTextFile(rel, res.headers.get("content-type") || "")) continue;
+      const text = decoder.decode(buf);
+      const refs = extractRelativeRefsFromText(text, url, base);
+      for (const next of refs) {
+        const clean = sanitizeRelPath(next);
+        if (!clean || seen.has(clean)) continue;
+        queue.push(clean);
+      }
+    }
+    if (!payloads.has("embedded.html") && !payloads.has("index.html")) return false;
+    const adapter = this.app.vault.adapter;
+    const configDir = this.app.vault.configDir;
+    const folder = this.getPluginInstallFolderName();
+    const root = (0, import_obsidian.normalizePath)(`${configDir}/plugins/${folder}/webapp`);
+    await this.ensureVaultFolderExists(root);
+    for (const [rel, buf] of payloads.entries()) {
+      const target = (0, import_obsidian.normalizePath)(`${root}/${rel}`);
+      const dir = dirnamePosix(target);
+      if (dir) await this.ensureVaultFolderExists(dir);
+      await adapter.writeBinary(target, buf);
+    }
+    return true;
   }
   async handleFrameLoaded() {
     const hydrated = await this.hydrateFrameFromVaultIfNeeded();
@@ -411,15 +496,21 @@ var ArxivStudioAppView = class extends import_obsidian.ItemView {
     if (!this.plugin.settings.enableVaultMirror) return;
     const imageMode = this.plugin.settings.saveImagesAsLinks ? "images=links" : "images=embedded";
     this.setStatus(`Vault mirror: ${this.getVaultMirrorFilePath()} (${imageMode})`);
-    this.syncVaultMirrorFromFrame().catch((e) => {
-      this.setStatus(`Vault mirror write failed: ${String(e)}`);
-      new import_obsidian.Notice(`ArXiv Studio: vault mirror write failed (${String(e)})`);
-    });
-    this.mirrorSyncTimer = window.setInterval(() => {
-      this.syncVaultMirrorFromFrame().catch((e) => {
+    (async () => {
+      try {
+        const hydrated = await this.hydrateFrameFromVaultIfNeeded();
+        if (hydrated) return;
+        await this.syncVaultMirrorFromFrame();
+        this.mirrorSyncTimer = window.setInterval(() => {
+          this.syncVaultMirrorFromFrame().catch((e) => {
+            this.setStatus(`Vault mirror write failed: ${String(e)}`);
+          });
+        }, 1500);
+      } catch (e) {
         this.setStatus(`Vault mirror write failed: ${String(e)}`);
-      });
-    }, 1500);
+        new import_obsidian.Notice(`ArXiv Studio: vault mirror write failed (${String(e)})`);
+      }
+    })();
   }
   stopVaultMirrorSync() {
     if (this.mirrorSyncTimer !== null) {
@@ -439,7 +530,17 @@ var ArxivStudioAppView = class extends import_obsidian.ItemView {
     } catch {
       return false;
     }
-    if (currentRaw.trim()) {
+    const hasLocalProjects = (() => {
+      const trimmed = currentRaw.trim();
+      if (!trimmed) return false;
+      try {
+        const parsed = JSON.parse(trimmed);
+        return Array.isArray(parsed) ? parsed.length > 0 : true;
+      } catch {
+        return true;
+      }
+    })();
+    if (hasLocalProjects) {
       this.mirrorLastPayload = currentRaw;
       return false;
     }
@@ -981,6 +1082,14 @@ var ArxivStudioSettingsTab = class extends import_obsidian.PluginSettingTab {
       this.plugin.settings.remoteUrl = value.trim();
       await this.plugin.saveSettings();
     }));
+    new import_obsidian.Setting(containerEl).setName("Auto-download missing embedded webapp").setDesc("If webapp folder is missing (BRAT style install), try downloading embedded build from URL below or Remote URL.").addToggle((toggle) => toggle.setValue(this.plugin.settings.autoDownloadMissingWebapp).onChange(async (value) => {
+      this.plugin.settings.autoDownloadMissingWebapp = value;
+      await this.plugin.saveSettings();
+    }));
+    new import_obsidian.Setting(containerEl).setName("Webapp bootstrap URL").setDesc("GitHub raw/folder URL containing embedded.html/index.html and assets. Example: https://raw.githubusercontent.com/<owner>/<repo>/main/obsidian-module/webapp/").addText((text) => text.setValue(this.plugin.settings.webappBootstrapUrl || "").onChange(async (value) => {
+      this.plugin.settings.webappBootstrapUrl = value.trim();
+      await this.plugin.saveSettings();
+    }));
     new import_obsidian.Setting(containerEl).setName("Vault provider").setDesc("Cloud provider for projects.json mirror.").addDropdown((dd) => dd.addOptions({
       local: "Local",
       dropbox: "Dropbox",
@@ -1150,4 +1259,48 @@ function looksLikeMarkdownText(value) {
   const text = value.trim();
   if (!text) return false;
   return /^#{1,6}\s+/m.test(text) || /^\s*[-*+]\s+/m.test(text) || /^\s*\d+\.\s+/m.test(text) || /```[\s\S]*```/m.test(text) || /\[[^\]]+]\([^)]+\)/m.test(text) || /!\[[^\]]*]\([^)]+\)/m.test(text);
+}
+function ensureTrailingSlash(url) {
+  return url.endsWith("/") ? url : `${url}/`;
+}
+function sanitizeRelPath(path) {
+  const clean = path.replace(/[#?].*$/, "").replace(/\\/g, "/").replace(/^\/+/, "").trim();
+  if (!clean) return "";
+  if (clean.startsWith("../")) return "";
+  if (clean.includes("://")) return "";
+  return clean;
+}
+function isLikelyTextFile(relPath, contentType) {
+  const low = relPath.toLowerCase();
+  if (/\.(html?|js|mjs|cjs|css|json|txt|map)$/.test(low)) return true;
+  return /\b(text|javascript|json|css|html)\b/i.test(contentType);
+}
+function extractRelativeRefsFromText(text, currentUrl, baseUrl) {
+  const refs = /* @__PURE__ */ new Set();
+  const addRef = (candidate) => {
+    const raw = candidate.trim().replace(/^['"]|['"]$/g, "");
+    if (!raw || raw.startsWith("data:") || raw.startsWith("blob:") || raw.startsWith("mailto:")) return;
+    let resolved;
+    try {
+      resolved = new URL(raw, currentUrl);
+    } catch {
+      return;
+    }
+    if (resolved.origin !== baseUrl.origin) return;
+    const basePath = ensureTrailingSlash(baseUrl.pathname);
+    if (!resolved.pathname.startsWith(basePath)) return;
+    const rel = sanitizeRelPath(resolved.pathname.slice(basePath.length));
+    if (rel) refs.add(rel);
+  };
+  const htmlAttr = /(src|href)\s*=\s*["']([^"']+)["']/gi;
+  let m;
+  while ((m = htmlAttr.exec(text)) !== null) addRef(m[2]);
+  const cssUrl = /url\(([^)]+)\)/gi;
+  while ((m = cssUrl.exec(text)) !== null) addRef(m[1]);
+  const anyQuotedPath = /["'`]([^"'`]+)["'`]/g;
+  while ((m = anyQuotedPath.exec(text)) !== null) {
+    const v = m[1];
+    if (/^(\.?\/|assets\/)/.test(v)) addRef(v);
+  }
+  return Array.from(refs);
 }

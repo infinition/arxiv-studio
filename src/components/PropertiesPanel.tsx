@@ -346,6 +346,10 @@ export default function PropertiesPanel({
         <Section title="Grid">
           <SliderRow label="Grid size" value={settings.gridSize} onChange={(v) => onUpdateSettings({ gridSize: v })} min={5} max={50} suffix="px" />
           <InputRow label="Grid size" value={settings.gridSize} onChange={(v) => onUpdateSettings({ gridSize: v })} min={5} max={50} />
+          <SliderRow label="Opacity" value={settings.gridOpacity} onChange={(v) => onUpdateSettings({ gridOpacity: v })} min={0} max={100} suffix="%" />
+          <InputRow label="Opacity" value={settings.gridOpacity} onChange={(v) => onUpdateSettings({ gridOpacity: v })} min={0} max={100} />
+          <SliderRow label="Thickness" value={Math.round(settings.gridThickness * 10)} onChange={(v) => onUpdateSettings({ gridThickness: v / 10 })} min={5} max={60} suffix="px" />
+          <InputRow label="Thickness" value={settings.gridThickness} onChange={(v) => onUpdateSettings({ gridThickness: v })} min={0.5} max={6} step={0.1} />
           <div className="flex items-center justify-between">
             <label className="text-xs" style={{ color: 'var(--text-secondary)' }}>Grid style</label>
             <button

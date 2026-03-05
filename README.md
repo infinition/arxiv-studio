@@ -50,6 +50,7 @@ It focuses on fast visual editing, arXiv-oriented structure, and local-first per
 ### Persistence and workspace
 - Project grid with create/duplicate/delete/import
 - Auto-save to local storage
+- Optional web folder mirror (when supported) to also write `projects.json` into a user-selected local directory
 - JSON import/export
 - Undo/redo history (`Ctrl+Z`, `Ctrl+Shift+Z`)
 
@@ -167,4 +168,3 @@ For Obsidian releases, `manifest.json` version must match the git tag version wi
 Example:
 - Tag `v1.2.3`
 - Manifest version `1.2.3`
-

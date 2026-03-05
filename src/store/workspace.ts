@@ -1,5 +1,6 @@
 import type { Element, ElementGroup, Page, Project } from '../types';
 import { createId, DEFAULT_ELEMENT, DEFAULT_SETTINGS } from '../utils/constants';
+import { queueWebFolderMirrorWrite } from './webFolderMirror';
 
 const STORAGE_KEY = 'arxiv-studio-projects';
 
@@ -15,6 +16,7 @@ function loadAll(): Project[] {
 
 function saveAll(projects: Project[]) {
   localStorage.setItem(STORAGE_KEY, JSON.stringify(projects));
+  queueWebFolderMirrorWrite(projects);
 }
 
 export function getProjects(): Project[] {
@@ -163,6 +165,12 @@ function normalizeProject(raw: Partial<Project>): Project {
       ...(raw.settings || {}),
       margins: { ...DEFAULT_SETTINGS.margins, ...(raw.settings?.margins || {}) },
       gridStyle: raw.settings?.gridStyle === 'squares' ? 'squares' : 'dots',
+      gridOpacity: Number.isFinite(raw.settings?.gridOpacity)
+        ? Math.max(0, Math.min(100, Number(raw.settings?.gridOpacity)))
+        : DEFAULT_SETTINGS.gridOpacity,
+      gridThickness: Number.isFinite(raw.settings?.gridThickness)
+        ? Math.max(0.5, Math.min(6, Number(raw.settings?.gridThickness)))
+        : DEFAULT_SETTINGS.gridThickness,
       showGuides: raw.settings?.showGuides !== false,
       defaultFont: typeof raw.settings?.defaultFont === 'string' ? raw.settings.defaultFont : DEFAULT_SETTINGS.defaultFont,
       paperTextureGlobal: raw.settings?.paperTextureGlobal || null,

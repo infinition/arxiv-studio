@@ -92,6 +92,8 @@ export interface Settings {
   showGuides: boolean;
   gridStyle: 'dots' | 'squares';
   gridSize: number;
+  gridOpacity: number;
+  gridThickness: number;
   zoom: number;
   paperTextureGlobal?: string | null;
   defaultFont: string;

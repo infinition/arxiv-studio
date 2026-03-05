@@ -52,6 +52,8 @@ export default function Canvas({
 }: Props) {
   const zoom = settings.zoom / 100;
   const { margins } = settings;
+  const gridOpacity = Math.max(0, Math.min(100, settings.gridOpacity)) / 100;
+  const gridThickness = Math.max(0.5, Math.min(6, settings.gridThickness));
   const pageRefs = useRef<Map<string, HTMLDivElement>>(new Map());
   const [guides, setGuides] = useState<GuideState>({ pageId: null, vertical: [], horizontal: [] });
   const clearGuides = useCallback(() => {
@@ -265,15 +267,17 @@ export default function Canvas({
                     className="absolute inset-0 pointer-events-none no-print"
                     style={settings.gridStyle === 'dots'
                       ? {
-                          backgroundImage: `radial-gradient(circle, var(--grid-dot) 1px, transparent 1px)`,
+                          backgroundImage: `radial-gradient(circle, var(--grid-dot) ${gridThickness}px, transparent ${gridThickness}px)`,
                           backgroundSize: `${settings.gridSize}px ${settings.gridSize}px`,
+                          opacity: gridOpacity,
                         }
                       : {
                           backgroundImage: `
-                            linear-gradient(to right, var(--grid-dot) 1px, transparent 1px),
-                            linear-gradient(to bottom, var(--grid-dot) 1px, transparent 1px)
+                            linear-gradient(to right, var(--grid-dot) ${gridThickness}px, transparent ${gridThickness}px),
+                            linear-gradient(to bottom, var(--grid-dot) ${gridThickness}px, transparent ${gridThickness}px)
                           `,
                           backgroundSize: `${settings.gridSize}px ${settings.gridSize}px`,
+                          opacity: gridOpacity,
                         }}
                   />
                 )}
