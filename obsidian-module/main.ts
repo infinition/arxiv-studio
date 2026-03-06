@@ -10,11 +10,13 @@ import {
   TFile,
   WorkspaceLeaf,
 } from 'obsidian';
+import JSZip from 'jszip';
 
 const VIEW_TYPE_ARXIV = 'arxiv-studio-app-view';
 const LOCAL_STORAGE_PROJECTS_KEY = 'arxiv-studio-projects';
 const VAULT_MIRROR_FILENAME = 'projects.json';
 const OFFICIAL_WEBAPP_URL = 'https://infinition.github.io/arxiv-studio/';
+const OFFICIAL_RELEASE_API_URL = 'https://api.github.com/repos/infinition/arxiv-studio/releases/latest';
 const LEGACY_LOCALHOST_URL = 'http://localhost:5173';
 
 type CloudProvider = 'local' | 'dropbox' | 'google-drive' | 'onedrive' | 'github' | 'icloud-drive';
@@ -233,6 +235,22 @@ export default class ArxivStudioObsidianPlugin extends Plugin {
     const explicitBootstrap = (this.settings.webappBootstrapUrl || '').trim();
     const remoteFallback = (this.settings.remoteUrl || '').trim();
     const candidates = [explicitBootstrap, remoteFallback].filter(Boolean);
+
+    try {
+      const downloadedFromRelease = await downloadWebappFromLatestReleaseZip(
+        this.app,
+        this.manifest as unknown as { id: string; dir?: string },
+        this.manifest.version
+      );
+      if (downloadedFromRelease) {
+        if (showSuccessNotice) new Notice('ArXiv Studio: embedded webapp downloaded from latest GitHub release.');
+        return true;
+      }
+    } catch (e) {
+      if (showSuccessNotice) {
+        new Notice(`ArXiv Studio: release zip bootstrap failed (${String(e)})`);
+      }
+    }
 
     for (const base of candidates) {
       if (!/^https?:\/\//i.test(base)) continue;
@@ -1632,6 +1650,78 @@ async function downloadWebappTreeToPluginFolder(
     }
   }
 
+  return writeWebappPayloadsToPluginFolder(app, manifest, payloads);
+}
+
+async function downloadWebappFromLatestReleaseZip(
+  app: App,
+  manifest: { id: string; dir?: string },
+  preferredVersion?: string
+) {
+  const zipUrl = await resolveLatestObsidianReleaseZipUrl(preferredVersion);
+  if (!zipUrl) return false;
+
+  const res = await fetch(zipUrl, { cache: 'no-store' });
+  if (!res.ok) {
+    throw new Error(`HTTP ${res.status} while fetching ${zipUrl}`);
+  }
+
+  const zipBuffer = await res.arrayBuffer();
+  const zip = await JSZip.loadAsync(zipBuffer);
+  const payloads = new Map<string, ArrayBuffer>();
+  const encoder = new TextEncoder();
+  const decoder = new TextDecoder();
+
+  for (const [entryName, entry] of Object.entries(zip.files)) {
+    if (entry.dir) continue;
+    const match = entryName.match(/(?:^|\/)webapp\/(.+)$/);
+    if (!match) continue;
+    const rel = sanitizeRelPath(match[1]);
+    if (!rel) continue;
+    const data = await entry.async('uint8array');
+    payloads.set(rel, uint8ArrayToArrayBuffer(data));
+  }
+
+  if (!payloads.has('embedded.html') && payloads.has('index.html')) {
+    const embedded = buildEmbeddedHtmlFromPayloads(payloads, decoder);
+    if (embedded) {
+      payloads.set('embedded.html', encoder.encode(embedded).buffer);
+    }
+  }
+
+  if (!payloads.has('embedded.html') && !payloads.has('index.html')) return false;
+
+  return writeWebappPayloadsToPluginFolder(app, manifest, payloads);
+}
+
+async function resolveLatestObsidianReleaseZipUrl(preferredVersion?: string) {
+  const res = await fetch(OFFICIAL_RELEASE_API_URL, {
+    cache: 'no-store',
+    headers: {
+      Accept: 'application/vnd.github+json',
+    },
+  });
+  if (!res.ok) {
+    throw new Error(`HTTP ${res.status} while fetching latest release metadata`);
+  }
+
+  const release = await res.json() as {
+    assets?: Array<{ name?: string; browser_download_url?: string }>;
+  };
+  const assets = Array.isArray(release.assets) ? release.assets : [];
+  const exactName = preferredVersion ? `arxiv-studio-obsidian-${preferredVersion}.zip` : '';
+  const exact = exactName ? assets.find((asset) => asset.name === exactName && asset.browser_download_url) : null;
+  if (exact?.browser_download_url) return exact.browser_download_url;
+
+  const fallback = assets.find((asset) => /arxiv-studio-obsidian-.*\.zip$/i.test(asset.name || '') && asset.browser_download_url);
+  return fallback?.browser_download_url || null;
+}
+
+async function writeWebappPayloadsToPluginFolder(
+  app: App,
+  manifest: { id: string; dir?: string },
+  payloads: Map<string, ArrayBuffer>
+) {
   const adapter = app.vault.adapter as {
     writeBinary: (path: string, data: ArrayBuffer) => Promise<void>;
   };
@@ -1709,6 +1799,10 @@ function looksLikeDevHtmlEntry(html: string) {
   return /src\s*=\s*["'][^"']*\/src\/main\.(t|j)sx?["']/i.test(normalized)
     || /href\s*=\s*["'][^"']*\/src\//i.test(normalized)
     || /type="module"\s+src="\/src\/main\.tsx"/i.test(normalized);
+}
+
+function uint8ArrayToArrayBuffer(value: Uint8Array) {
+  return value.buffer.slice(value.byteOffset, value.byteOffset + value.byteLength);
 }
 
 function sanitizeRelPath(path: string) {
