@@ -84,6 +84,8 @@ Required files:
 - `obsidian-module/styles.css`
 - `obsidian-module/webapp/` (full folder)
 
+If the plugin is installed through BRAT and the packaged `webapp/` folder is missing, the plugin now auto-downloads the embedded app from the official GitHub Pages build on first launch. The fallback/bootstrap URL can be changed in plugin settings.
+
 ### Obsidian bridge capabilities
 - Drag/drop from vault to canvas (images, markdown/text, links)
 - URI resolution for `obsidian://open?...`

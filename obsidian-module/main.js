@@ -28,11 +28,13 @@ var import_obsidian = require("obsidian");
 var VIEW_TYPE_ARXIV = "arxiv-studio-app-view";
 var LOCAL_STORAGE_PROJECTS_KEY = "arxiv-studio-projects";
 var VAULT_MIRROR_FILENAME = "projects.json";
+var OFFICIAL_WEBAPP_URL = "https://infinition.github.io/arxiv-studio/";
+var LEGACY_LOCALHOST_URL = "http://localhost:5173";
 var DEFAULT_SETTINGS = {
   runtime: "embedded",
-  remoteUrl: "http://localhost:5173",
+  remoteUrl: OFFICIAL_WEBAPP_URL,
   autoDownloadMissingWebapp: true,
-  webappBootstrapUrl: "",
+  webappBootstrapUrl: OFFICIAL_WEBAPP_URL,
   provider: "local",
   providerVaultPath: "vaults/arxiv",
   providerToken: "",
@@ -121,7 +123,17 @@ var ArxivStudioObsidianPlugin = class extends import_obsidian.Plugin {
     return null;
   }
   async loadSettings() {
-    this.settings = Object.assign({}, DEFAULT_SETTINGS, await this.loadData());
+    const loaded = await this.loadData();
+    this.settings = Object.assign({}, DEFAULT_SETTINGS, loaded);
+    if (!this.settings.webappBootstrapUrl.trim()) {
+      this.settings.webappBootstrapUrl = OFFICIAL_WEBAPP_URL;
+    }
+    if (!loaded?.remoteUrl) {
+      this.settings.remoteUrl = OFFICIAL_WEBAPP_URL;
+    }
+    if (this.settings.remoteUrl.trim() === LEGACY_LOCALHOST_URL && !loaded?.webappBootstrapUrl) {
+      this.settings.webappBootstrapUrl = OFFICIAL_WEBAPP_URL;
+    }
   }
   async saveSettings() {
     await this.saveData(this.settings);
@@ -1078,7 +1090,7 @@ var ArxivStudioSettingsTab = class extends import_obsidian.PluginSettingTab {
       this.plugin.settings.runtime = value;
       await this.plugin.saveSettings();
     }));
-    new import_obsidian.Setting(containerEl).setName("Remote URL").setDesc("Used when runtime is Remote URL.").addText((text) => text.setValue(this.plugin.settings.remoteUrl).onChange(async (value) => {
+    new import_obsidian.Setting(containerEl).setName("Remote URL").setDesc("Used when runtime is Remote URL. Default: official GitHub Pages app.").addText((text) => text.setPlaceholder(OFFICIAL_WEBAPP_URL).setValue(this.plugin.settings.remoteUrl).onChange(async (value) => {
       this.plugin.settings.remoteUrl = value.trim();
       await this.plugin.saveSettings();
     }));
@@ -1086,7 +1098,7 @@ var ArxivStudioSettingsTab = class extends import_obsidian.PluginSettingTab {
       this.plugin.settings.autoDownloadMissingWebapp = value;
       await this.plugin.saveSettings();
     }));
-    new import_obsidian.Setting(containerEl).setName("Webapp bootstrap URL").setDesc("GitHub raw/folder URL containing embedded.html/index.html and assets. Example: https://raw.githubusercontent.com/<owner>/<repo>/main/obsidian-module/webapp/").addText((text) => text.setValue(this.plugin.settings.webappBootstrapUrl || "").onChange(async (value) => {
+    new import_obsidian.Setting(containerEl).setName("Webapp bootstrap URL").setDesc("Folder URL containing embedded.html/index.html and assets. BRAT installs use this when the packaged webapp folder is missing.").addText((text) => text.setPlaceholder(OFFICIAL_WEBAPP_URL).setValue(this.plugin.settings.webappBootstrapUrl || "").onChange(async (value) => {
       this.plugin.settings.webappBootstrapUrl = value.trim();
       await this.plugin.saveSettings();
     }));

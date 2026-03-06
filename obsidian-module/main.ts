@@ -14,6 +14,8 @@ import {
 const VIEW_TYPE_ARXIV = 'arxiv-studio-app-view';
 const LOCAL_STORAGE_PROJECTS_KEY = 'arxiv-studio-projects';
 const VAULT_MIRROR_FILENAME = 'projects.json';
+const OFFICIAL_WEBAPP_URL = 'https://infinition.github.io/arxiv-studio/';
+const LEGACY_LOCALHOST_URL = 'http://localhost:5173';
 
 type CloudProvider = 'local' | 'dropbox' | 'google-drive' | 'onedrive' | 'github' | 'icloud-drive';
 
@@ -33,9 +35,9 @@ interface ArxivStudioSettings {
 
 const DEFAULT_SETTINGS: ArxivStudioSettings = {
   runtime: 'embedded',
-  remoteUrl: 'http://localhost:5173',
+  remoteUrl: OFFICIAL_WEBAPP_URL,
   autoDownloadMissingWebapp: true,
-  webappBootstrapUrl: '',
+  webappBootstrapUrl: OFFICIAL_WEBAPP_URL,
   provider: 'local',
   providerVaultPath: 'vaults/arxiv',
   providerToken: '',
@@ -152,7 +154,20 @@ export default class ArxivStudioObsidianPlugin extends Plugin {
   }
 
   async loadSettings() {
-    this.settings = Object.assign({}, DEFAULT_SETTINGS, await this.loadData());
+    const loaded = await this.loadData();
+    this.settings = Object.assign({}, DEFAULT_SETTINGS, loaded);
+
+    if (!this.settings.webappBootstrapUrl.trim()) {
+      this.settings.webappBootstrapUrl = OFFICIAL_WEBAPP_URL;
+    }
+
+    if (!loaded?.remoteUrl) {
+      this.settings.remoteUrl = OFFICIAL_WEBAPP_URL;
+    }
+
+    if (this.settings.remoteUrl.trim() === LEGACY_LOCALHOST_URL && !loaded?.webappBootstrapUrl) {
+      this.settings.webappBootstrapUrl = OFFICIAL_WEBAPP_URL;
+    }
   }
 
   async saveSettings() {
@@ -1284,8 +1299,9 @@ class ArxivStudioSettingsTab extends PluginSettingTab {
 
     new Setting(containerEl)
       .setName('Remote URL')
-      .setDesc('Used when runtime is Remote URL.')
+      .setDesc('Used when runtime is Remote URL. Default: official GitHub Pages app.')
       .addText((text) => text
+        .setPlaceholder(OFFICIAL_WEBAPP_URL)
         .setValue(this.plugin.settings.remoteUrl)
         .onChange(async (value) => {
           this.plugin.settings.remoteUrl = value.trim();
@@ -1304,8 +1320,9 @@ class ArxivStudioSettingsTab extends PluginSettingTab {
 
     new Setting(containerEl)
       .setName('Webapp bootstrap URL')
-      .setDesc('GitHub raw/folder URL containing embedded.html/index.html and assets. Example: https://raw.githubusercontent.com/<owner>/<repo>/main/obsidian-module/webapp/')
+      .setDesc('Folder URL containing embedded.html/index.html and assets. BRAT installs use this when the packaged webapp folder is missing.')
       .addText((text) => text
+        .setPlaceholder(OFFICIAL_WEBAPP_URL)
         .setValue(this.plugin.settings.webappBootstrapUrl || '')
         .onChange(async (value) => {
           this.plugin.settings.webappBootstrapUrl = value.trim();
