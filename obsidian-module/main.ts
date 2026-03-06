@@ -65,9 +65,11 @@ interface ArxivProjectsResponsePayload {
 export default class ArxivStudioObsidianPlugin extends Plugin {
   settings: ArxivStudioSettings = DEFAULT_SETTINGS;
   liveViews = new Set<ArxivStudioAppView>();
+  embeddedWebappBootstrapPromise: Promise<boolean> | null = null;
 
   async onload() {
     await this.loadSettings();
+    void this.ensureEmbeddedWebappAvailable();
 
     this.registerView(VIEW_TYPE_ARXIV, (leaf) => new ArxivStudioAppView(leaf, this));
     this.addSettingTab(new ArxivStudioSettingsTab(this.app, this));
@@ -92,6 +94,18 @@ export default class ArxivStudioObsidianPlugin extends Plugin {
         return true;
       },
     });
+  }
+
+  async ensureVaultFolderExists(app: App, folderPath: string) {
+    const adapter = app.vault.adapter;
+    const parts = normalizePath(folderPath).split('/').filter(Boolean);
+    let current = '';
+    for (const part of parts) {
+      current = current ? `${current}/${part}` : part;
+      if (!(await adapter.exists(current))) {
+        await adapter.mkdir(current);
+      }
+    }
   }
 
   onunload() {
@@ -165,6 +179,10 @@ export default class ArxivStudioObsidianPlugin extends Plugin {
       this.settings.remoteUrl = OFFICIAL_WEBAPP_URL;
     }
 
+    if (loaded?.runtime !== 'remote' && this.settings.remoteUrl.trim() === LEGACY_LOCALHOST_URL && !loaded?.webappBootstrapUrl) {
+      this.settings.remoteUrl = OFFICIAL_WEBAPP_URL;
+    }
+
     if (this.settings.remoteUrl.trim() === LEGACY_LOCALHOST_URL && !loaded?.webappBootstrapUrl) {
       this.settings.webappBootstrapUrl = OFFICIAL_WEBAPP_URL;
     }
@@ -173,6 +191,43 @@ export default class ArxivStudioObsidianPlugin extends Plugin {
   async saveSettings() {
     await this.saveData(this.settings);
     for (const view of this.liveViews) view.onPluginSettingsChanged();
+  }
+
+  async ensureEmbeddedWebappAvailable(showSuccessNotice = false) {
+    if (this.settings.runtime !== 'embedded') return false;
+    const existing = await this.resolveEmbeddedIndexUrl();
+    if (existing) return true;
+    if (!this.settings.autoDownloadMissingWebapp) return false;
+
+    if (this.embeddedWebappBootstrapPromise) return this.embeddedWebappBootstrapPromise;
+    this.embeddedWebappBootstrapPromise = this.bootstrapEmbeddedWebappFromRemote(showSuccessNotice).finally(() => {
+      this.embeddedWebappBootstrapPromise = null;
+    });
+    return this.embeddedWebappBootstrapPromise;
+  }
+
+  async bootstrapEmbeddedWebappFromRemote(showSuccessNotice = false) {
+    const explicitBootstrap = (this.settings.webappBootstrapUrl || '').trim();
+    const remoteFallback = (this.settings.remoteUrl || '').trim();
+    const candidates = [explicitBootstrap, remoteFallback].filter(Boolean);
+
+    for (const base of candidates) {
+      if (!/^https?:\/\//i.test(base)) continue;
+      if (!explicitBootstrap && isLocalhostHttpUrl(base)) continue;
+      try {
+        const downloaded = await downloadWebappTreeToPluginFolder(this.app, this.manifest as unknown as { id: string; dir?: string }, base);
+        if (downloaded) {
+          if (showSuccessNotice) new Notice('ArXiv Studio: embedded webapp downloaded from remote source.');
+          return true;
+        }
+      } catch (e) {
+        if (showSuccessNotice) {
+          new Notice(`ArXiv Studio: webapp bootstrap failed (${String(e)})`);
+        }
+      }
+    }
+
+    return false;
   }
 }
 
@@ -245,6 +300,18 @@ class ArxivStudioAppView extends ItemView {
     this.reloadFrame().catch((e) => new Notice(`ArXiv Studio: ${String(e)}`));
   }
 
+  async ensureVaultFolderExists(folderPath: string) {
+    const adapter = this.app.vault.adapter;
+    const parts = normalizePath(folderPath).split('/').filter(Boolean);
+    let current = '';
+    for (const part of parts) {
+      current = current ? `${current}/${part}` : part;
+      if (!(await adapter.exists(current))) {
+        await adapter.mkdir(current);
+      }
+    }
+  }
+
   async onClose() {
     this.plugin.liveViews.delete(this);
     this.frameReady = false;
@@ -295,97 +362,7 @@ class ArxivStudioAppView extends ItemView {
   }
 
   async ensureEmbeddedWebappFromRemote() {
-    if (this.webappBootstrapPromise) return this.webappBootstrapPromise;
-    this.webappBootstrapPromise = this.bootstrapEmbeddedWebappFromRemote().finally(() => {
-      this.webappBootstrapPromise = null;
-    });
-    return this.webappBootstrapPromise;
-  }
-
-  async bootstrapEmbeddedWebappFromRemote() {
-    const explicitBootstrap = (this.plugin.settings.webappBootstrapUrl || '').trim();
-    const remoteFallback = (this.plugin.settings.remoteUrl || '').trim();
-    const candidates = [explicitBootstrap, remoteFallback].filter(Boolean);
-
-    for (const base of candidates) {
-      if (!/^https?:\/\//i.test(base)) continue;
-      if (!explicitBootstrap && isLocalhostHttpUrl(base)) continue;
-      try {
-        const downloaded = await this.downloadWebappTree(base);
-        if (downloaded) {
-          new Notice('ArXiv Studio: embedded webapp downloaded from remote source.');
-          return true;
-        }
-      } catch (e) {
-        this.setStatus(`Webapp bootstrap failed: ${String(e)}`);
-      }
-    }
-
-    return false;
-  }
-
-  getPluginInstallFolderName() {
-    const dir = (this.plugin.manifest as unknown as { dir?: string }).dir;
-    if (dir) {
-      const tail = dir.split('/').filter(Boolean).pop();
-      if (tail) return tail;
-    }
-    return this.plugin.manifest.id;
-  }
-
-  async downloadWebappTree(baseUrlRaw: string) {
-    const baseUrl = ensureTrailingSlash(baseUrlRaw);
-    const base = new URL(baseUrl);
-    const queue: string[] = ['embedded.html', 'index.html'];
-    const seen = new Set<string>();
-    const payloads = new Map<string, ArrayBuffer>();
-    const decoder = new TextDecoder();
-
-    while (queue.length > 0) {
-      const rel = sanitizeRelPath(queue.shift() || '');
-      if (!rel || seen.has(rel)) continue;
-      seen.add(rel);
-
-      const url = new URL(rel, base);
-      const res = await fetch(url.toString(), { cache: 'no-store' });
-      if (!res.ok) {
-        if (rel === 'embedded.html' || rel === 'index.html') continue;
-        throw new Error(`HTTP ${res.status} while fetching ${url.toString()}`);
-      }
-
-      const buf = await res.arrayBuffer();
-      payloads.set(rel, buf);
-
-      if (!isLikelyTextFile(rel, res.headers.get('content-type') || '')) continue;
-      const text = decoder.decode(buf);
-      const refs = extractRelativeRefsFromText(text, url, base);
-      for (const next of refs) {
-        const clean = sanitizeRelPath(next);
-        if (!clean || seen.has(clean)) continue;
-        queue.push(clean);
-      }
-    }
-
-    if (!payloads.has('embedded.html') && !payloads.has('index.html')) return false;
-
-    const adapter = this.app.vault.adapter as {
-      writeBinary: (path: string, data: ArrayBuffer) => Promise<void>;
-      exists: (path: string) => Promise<boolean>;
-      mkdir: (path: string) => Promise<void>;
-    };
-    const configDir = this.app.vault.configDir;
-    const folder = this.getPluginInstallFolderName();
-    const root = normalizePath(`${configDir}/plugins/${folder}/webapp`);
-    await this.ensureVaultFolderExists(root);
-
-    for (const [rel, buf] of payloads.entries()) {
-      const target = normalizePath(`${root}/${rel}`);
-      const dir = dirnamePosix(target);
-      if (dir) await this.ensureVaultFolderExists(dir);
-      await adapter.writeBinary(target, buf);
-    }
-
-    return true;
+    return this.plugin.ensureEmbeddedWebappAvailable(true);
   }
 
   async handleFrameLoaded() {
@@ -395,6 +372,18 @@ class ArxivStudioAppView extends ItemView {
     this.applyObsidianThemeToIframe();
     this.flushQueue();
     this.startVaultMirrorSync();
+  }
+
+  async ensureVaultFolderExists(folderPath: string) {
+    const adapter = this.app.vault.adapter;
+    const parts = normalizePath(folderPath).split('/').filter(Boolean);
+    let current = '';
+    for (const part of parts) {
+      current = current ? `${current}/${part}` : part;
+      if (!(await adapter.exists(current))) {
+        await adapter.mkdir(current);
+      }
+    }
   }
 
   postDrop(payload: ObsidianDropPayload) {
