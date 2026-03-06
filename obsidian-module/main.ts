@@ -665,7 +665,7 @@ class ArxivStudioAppView extends ItemView {
     }
 
     if (mirrorRaw !== this.mirrorLastPayload) {
-      await this.ensureVaultFolderExists(this.getVaultMirrorFolderPath());
+      await ensureVaultFolderExists(this.app, this.getVaultMirrorFolderPath());
       await this.app.vault.adapter.write(this.getVaultMirrorFilePath(), mirrorRaw);
       this.mirrorLastPayload = mirrorRaw;
       if (!this.mirrorPathNotified) {
@@ -817,7 +817,7 @@ class ArxivStudioAppView extends ItemView {
       writeBinary: (path: string, data: ArrayBuffer) => Promise<void>;
     };
     const baseFolder = normalizePath(`${this.getVaultMirrorFolderPath()}/images`);
-    await this.ensureVaultFolderExists(baseFolder);
+    await ensureVaultFolderExists(this.app, baseFolder);
     const cache = new Map<string, string>();
 
     const toLink = async (projectId: string, value: string) => {
@@ -829,7 +829,7 @@ class ArxivStudioAppView extends ItemView {
       const hash = shortHash(value);
       const ext = extFromMime(parsed.mime);
       const filePath = normalizePath(`${baseFolder}/${projectId}/${hash}.${ext}`);
-      await this.ensureVaultFolderExists(dirnamePosix(filePath));
+      await ensureVaultFolderExists(this.app, dirnamePosix(filePath));
       if (!(await adapter.exists(filePath))) {
         await adapter.writeBinary(filePath, parsed.buffer);
       }

@@ -48,9 +48,11 @@ var ArxivStudioObsidianPlugin = class extends import_obsidian.Plugin {
     super(...arguments);
     __publicField(this, "settings", DEFAULT_SETTINGS);
     __publicField(this, "liveViews", /* @__PURE__ */ new Set());
+    __publicField(this, "embeddedWebappBootstrapPromise", null);
   }
   async onload() {
     await this.loadSettings();
+    void this.ensureEmbeddedWebappAvailable();
     this.registerView(VIEW_TYPE_ARXIV, (leaf) => new ArxivStudioAppView(leaf, this));
     this.addSettingTab(new ArxivStudioSettingsTab(this.app, this));
     this.addRibbonIcon("layers", "Open ArXiv Studio", () => {
@@ -131,6 +133,9 @@ var ArxivStudioObsidianPlugin = class extends import_obsidian.Plugin {
     if (!loaded?.remoteUrl) {
       this.settings.remoteUrl = OFFICIAL_WEBAPP_URL;
     }
+    if (loaded?.runtime !== "remote" && this.settings.remoteUrl.trim() === LEGACY_LOCALHOST_URL && !loaded?.webappBootstrapUrl) {
+      this.settings.remoteUrl = OFFICIAL_WEBAPP_URL;
+    }
     if (this.settings.remoteUrl.trim() === LEGACY_LOCALHOST_URL && !loaded?.webappBootstrapUrl) {
       this.settings.webappBootstrapUrl = OFFICIAL_WEBAPP_URL;
     }
@@ -138,6 +143,38 @@ var ArxivStudioObsidianPlugin = class extends import_obsidian.Plugin {
   async saveSettings() {
     await this.saveData(this.settings);
     for (const view of this.liveViews) view.onPluginSettingsChanged();
+  }
+  async ensureEmbeddedWebappAvailable(showSuccessNotice = false) {
+    if (this.settings.runtime !== "embedded") return false;
+    const existing = await this.resolveEmbeddedIndexUrl();
+    if (existing) return true;
+    if (!this.settings.autoDownloadMissingWebapp) return false;
+    if (this.embeddedWebappBootstrapPromise) return this.embeddedWebappBootstrapPromise;
+    this.embeddedWebappBootstrapPromise = this.bootstrapEmbeddedWebappFromRemote(showSuccessNotice).finally(() => {
+      this.embeddedWebappBootstrapPromise = null;
+    });
+    return this.embeddedWebappBootstrapPromise;
+  }
+  async bootstrapEmbeddedWebappFromRemote(showSuccessNotice = false) {
+    const explicitBootstrap = (this.settings.webappBootstrapUrl || "").trim();
+    const remoteFallback = (this.settings.remoteUrl || "").trim();
+    const candidates = [explicitBootstrap, remoteFallback].filter(Boolean);
+    for (const base of candidates) {
+      if (!/^https?:\/\//i.test(base)) continue;
+      if (!explicitBootstrap && isLocalhostHttpUrl(base)) continue;
+      try {
+        const downloaded = await downloadWebappTreeToPluginFolder(this.app, this.manifest, base);
+        if (downloaded) {
+          if (showSuccessNotice) new import_obsidian.Notice("ArXiv Studio: embedded webapp downloaded from remote source.");
+          return true;
+        }
+      } catch (e) {
+        if (showSuccessNotice) {
+          new import_obsidian.Notice(`ArXiv Studio: webapp bootstrap failed (${String(e)})`);
+        }
+      }
+    }
+    return false;
   }
 };
 var ArxivStudioAppView = class extends import_obsidian.ItemView {
@@ -247,80 +284,7 @@ var ArxivStudioAppView = class extends import_obsidian.ItemView {
     this.iframe.src = src;
   }
   async ensureEmbeddedWebappFromRemote() {
-    if (this.webappBootstrapPromise) return this.webappBootstrapPromise;
-    this.webappBootstrapPromise = this.bootstrapEmbeddedWebappFromRemote().finally(() => {
-      this.webappBootstrapPromise = null;
-    });
-    return this.webappBootstrapPromise;
-  }
-  async bootstrapEmbeddedWebappFromRemote() {
-    const explicitBootstrap = (this.plugin.settings.webappBootstrapUrl || "").trim();
-    const remoteFallback = (this.plugin.settings.remoteUrl || "").trim();
-    const candidates = [explicitBootstrap, remoteFallback].filter(Boolean);
-    for (const base of candidates) {
-      if (!/^https?:\/\//i.test(base)) continue;
-      if (!explicitBootstrap && isLocalhostHttpUrl(base)) continue;
-      try {
-        const downloaded = await this.downloadWebappTree(base);
-        if (downloaded) {
-          new import_obsidian.Notice("ArXiv Studio: embedded webapp downloaded from remote source.");
-          return true;
-        }
-      } catch (e) {
-        this.setStatus(`Webapp bootstrap failed: ${String(e)}`);
-      }
-    }
-    return false;
-  }
-  getPluginInstallFolderName() {
-    const dir = this.plugin.manifest.dir;
-    if (dir) {
-      const tail = dir.split("/").filter(Boolean).pop();
-      if (tail) return tail;
-    }
-    return this.plugin.manifest.id;
-  }
-  async downloadWebappTree(baseUrlRaw) {
-    const baseUrl = ensureTrailingSlash(baseUrlRaw);
-    const base = new URL(baseUrl);
-    const queue = ["embedded.html", "index.html"];
-    const seen = /* @__PURE__ */ new Set();
-    const payloads = /* @__PURE__ */ new Map();
-    const decoder = new TextDecoder();
-    while (queue.length > 0) {
-      const rel = sanitizeRelPath(queue.shift() || "");
-      if (!rel || seen.has(rel)) continue;
-      seen.add(rel);
-      const url = new URL(rel, base);
-      const res = await fetch(url.toString(), { cache: "no-store" });
-      if (!res.ok) {
-        if (rel === "embedded.html" || rel === "index.html") continue;
-        throw new Error(`HTTP ${res.status} while fetching ${url.toString()}`);
-      }
-      const buf = await res.arrayBuffer();
-      payloads.set(rel, buf);
-      if (!isLikelyTextFile(rel, res.headers.get("content-type") || "")) continue;
-      const text = decoder.decode(buf);
-      const refs = extractRelativeRefsFromText(text, url, base);
-      for (const next of refs) {
-        const clean = sanitizeRelPath(next);
-        if (!clean || seen.has(clean)) continue;
-        queue.push(clean);
-      }
-    }
-    if (!payloads.has("embedded.html") && !payloads.has("index.html")) return false;
-    const adapter = this.app.vault.adapter;
-    const configDir = this.app.vault.configDir;
-    const folder = this.getPluginInstallFolderName();
-    const root = (0, import_obsidian.normalizePath)(`${configDir}/plugins/${folder}/webapp`);
-    await this.ensureVaultFolderExists(root);
-    for (const [rel, buf] of payloads.entries()) {
-      const target = (0, import_obsidian.normalizePath)(`${root}/${rel}`);
-      const dir = dirnamePosix(target);
-      if (dir) await this.ensureVaultFolderExists(dir);
-      await adapter.writeBinary(target, buf);
-    }
-    return true;
+    return this.plugin.ensureEmbeddedWebappAvailable(true);
   }
   async handleFrameLoaded() {
     const hydrated = await this.hydrateFrameFromVaultIfNeeded();
@@ -602,7 +566,7 @@ var ArxivStudioAppView = class extends import_obsidian.ItemView {
       mirrorRaw = await this.deflateImagesToMirrorLinks(raw);
     }
     if (mirrorRaw !== this.mirrorLastPayload) {
-      await this.ensureVaultFolderExists(this.getVaultMirrorFolderPath());
+      await ensureVaultFolderExists(this.app, this.getVaultMirrorFolderPath());
       await this.app.vault.adapter.write(this.getVaultMirrorFilePath(), mirrorRaw);
       this.mirrorLastPayload = mirrorRaw;
       if (!this.mirrorPathNotified) {
@@ -729,7 +693,7 @@ var ArxivStudioAppView = class extends import_obsidian.ItemView {
     if (!Array.isArray(projects)) return raw;
     const adapter = this.app.vault.adapter;
     const baseFolder = (0, import_obsidian.normalizePath)(`${this.getVaultMirrorFolderPath()}/images`);
-    await this.ensureVaultFolderExists(baseFolder);
+    await ensureVaultFolderExists(this.app, baseFolder);
     const cache = /* @__PURE__ */ new Map();
     const toLink = async (projectId, value) => {
       if (!value.startsWith("data:image/")) return value;
@@ -739,7 +703,7 @@ var ArxivStudioAppView = class extends import_obsidian.ItemView {
       const hash = shortHash(value);
       const ext = extFromMime(parsed.mime);
       const filePath = (0, import_obsidian.normalizePath)(`${baseFolder}/${projectId}/${hash}.${ext}`);
-      await this.ensureVaultFolderExists(dirnamePosix(filePath));
+      await ensureVaultFolderExists(this.app, dirnamePosix(filePath));
       if (!await adapter.exists(filePath)) {
         await adapter.writeBinary(filePath, parsed.buffer);
       }
@@ -1274,6 +1238,66 @@ function looksLikeMarkdownText(value) {
 }
 function ensureTrailingSlash(url) {
   return url.endsWith("/") ? url : `${url}/`;
+}
+function getPluginInstallFolderName(manifest) {
+  if (manifest.dir) {
+    const tail = manifest.dir.split("/").filter(Boolean).pop();
+    if (tail) return tail;
+  }
+  return manifest.id;
+}
+async function ensureVaultFolderExists(app, folderPath) {
+  const adapter = app.vault.adapter;
+  const parts = (0, import_obsidian.normalizePath)(folderPath).split("/").filter(Boolean);
+  let current = "";
+  for (const part of parts) {
+    current = current ? `${current}/${part}` : part;
+    if (!await adapter.exists(current)) {
+      await adapter.mkdir(current);
+    }
+  }
+}
+async function downloadWebappTreeToPluginFolder(app, manifest, baseUrlRaw) {
+  const baseUrl = ensureTrailingSlash(baseUrlRaw);
+  const base = new URL(baseUrl);
+  const queue = ["embedded.html", "index.html"];
+  const seen = /* @__PURE__ */ new Set();
+  const payloads = /* @__PURE__ */ new Map();
+  const decoder = new TextDecoder();
+  while (queue.length > 0) {
+    const rel = sanitizeRelPath(queue.shift() || "");
+    if (!rel || seen.has(rel)) continue;
+    seen.add(rel);
+    const url = new URL(rel, base);
+    const res = await fetch(url.toString(), { cache: "no-store" });
+    if (!res.ok) {
+      if (rel === "embedded.html" || rel === "index.html") continue;
+      throw new Error(`HTTP ${res.status} while fetching ${url.toString()}`);
+    }
+    const buf = await res.arrayBuffer();
+    payloads.set(rel, buf);
+    if (!isLikelyTextFile(rel, res.headers.get("content-type") || "")) continue;
+    const text = decoder.decode(buf);
+    const refs = extractRelativeRefsFromText(text, url, base);
+    for (const next of refs) {
+      const clean = sanitizeRelPath(next);
+      if (!clean || seen.has(clean)) continue;
+      queue.push(clean);
+    }
+  }
+  if (!payloads.has("embedded.html") && !payloads.has("index.html")) return false;
+  const adapter = app.vault.adapter;
+  const configDir = app.vault.configDir;
+  const folder = getPluginInstallFolderName(manifest);
+  const root = (0, import_obsidian.normalizePath)(`${configDir}/plugins/${folder}/webapp`);
+  await ensureVaultFolderExists(app, root);
+  for (const [rel, buf] of payloads.entries()) {
+    const target = (0, import_obsidian.normalizePath)(`${root}/${rel}`);
+    const dir = dirnamePosix(target);
+    if (dir) await ensureVaultFolderExists(app, dir);
+    await adapter.writeBinary(target, buf);
+  }
+  return true;
 }
 function sanitizeRelPath(path) {
   const clean = path.replace(/[#?].*$/, "").replace(/\\/g, "/").replace(/^\/+/, "").trim();
