@@ -155,6 +155,29 @@ export default class ArxivStudioObsidianPlugin extends Plugin {
     return null;
   }
 
+  async resolveEmbeddedHtmlUrl() {
+    const adapter = this.app.vault.adapter as { getResourcePath?: (path: string) => string };
+    if (typeof adapter.getResourcePath !== 'function') return null;
+
+    const configDir = this.app.vault.configDir;
+    const pluginRoot = normalizePath(`${configDir}/plugins`);
+    const id = this.manifest.id;
+    const dir = (this.manifest as unknown as { dir?: string }).dir;
+
+    const candidates = new Set<string>();
+    candidates.add(id);
+    if (dir) candidates.add(dir.split('/').pop() || dir);
+
+    for (const folder of candidates) {
+      const embedded = normalizePath(`${pluginRoot}/${folder}/webapp/embedded.html`);
+      if (await this.app.vault.adapter.exists(embedded)) {
+        return adapter.getResourcePath(embedded);
+      }
+    }
+
+    return null;
+  }
+
   async loadSettings() {
     const loaded = await this.loadData();
     this.settings = Object.assign({}, DEFAULT_SETTINGS, loaded);
@@ -183,15 +206,17 @@ export default class ArxivStudioObsidianPlugin extends Plugin {
 
   async ensureEmbeddedWebappAvailable(showSuccessNotice = false) {
     if (this.settings.runtime !== 'embedded') return false;
-    const existing = await this.resolveEmbeddedIndexUrl();
-    if (existing) return true;
-    if (!this.settings.autoDownloadMissingWebapp) return false;
+    const embedded = await this.resolveEmbeddedHtmlUrl();
+    if (embedded) return true;
+    const existingIndex = await this.resolveEmbeddedIndexUrl();
+    if (!this.settings.autoDownloadMissingWebapp) return Boolean(existingIndex);
 
     if (this.embeddedWebappBootstrapPromise) return this.embeddedWebappBootstrapPromise;
     this.embeddedWebappBootstrapPromise = this.bootstrapEmbeddedWebappFromRemote(showSuccessNotice).finally(() => {
       this.embeddedWebappBootstrapPromise = null;
     });
-    return this.embeddedWebappBootstrapPromise;
+    const downloaded = await this.embeddedWebappBootstrapPromise;
+    return downloaded || Boolean(existingIndex);
   }
 
   async bootstrapEmbeddedWebappFromRemote(showSuccessNotice = false) {
@@ -1561,6 +1586,7 @@ async function downloadWebappTreeToPluginFolder(
   const seen = new Set<string>();
   const payloads = new Map<string, ArrayBuffer>();
   const decoder = new TextDecoder();
+  const encoder = new TextEncoder();
 
   while (queue.length > 0) {
     const rel = sanitizeRelPath(queue.shift() || '');
@@ -1589,6 +1615,13 @@ async function downloadWebappTreeToPluginFolder(
 
   if (!payloads.has('embedded.html') && !payloads.has('index.html')) return false;
 
+  if (!payloads.has('embedded.html') && payloads.has('index.html')) {
+    const embedded = buildEmbeddedHtmlFromPayloads(payloads, decoder);
+    if (embedded) {
+      payloads.set('embedded.html', encoder.encode(embedded).buffer);
+    }
+  }
+
   const adapter = app.vault.adapter as {
     writeBinary: (path: string, data: ArrayBuffer) => Promise<void>;
   };
@@ -1605,6 +1638,60 @@ async function downloadWebappTreeToPluginFolder(
   }
 
   return true;
+}
+
+function buildEmbeddedHtmlFromPayloads(payloads: Map<string, ArrayBuffer>, decoder: TextDecoder) {
+  const indexBuffer = payloads.get('index.html');
+  if (!indexBuffer) return null;
+
+  let html = decoder.decode(indexBuffer);
+  const cssRefs = [...html.matchAll(/<link[^>]*rel="stylesheet"[^>]*href="([^\"]+)"[^>]*>/g)];
+  const inlineCssBlocks: string[] = [];
+  for (const ref of cssRefs) {
+    const rel = sanitizeRelPath(ref[1]);
+    const cssBuffer = rel ? payloads.get(rel) : null;
+    if (!cssBuffer) continue;
+    const css = sanitizeInlineCss(decoder.decode(cssBuffer));
+    inlineCssBlocks.push(`<style>\n${css}\n</style>`);
+    html = html.replace(ref[0], '');
+  }
+
+  const jsRefs = [...html.matchAll(/<script[^>]*type="module"[^>]*src="([^\"]+)"[^>]*><\/script>/g)];
+  const inlineJsBlocks: string[] = [];
+  for (const ref of jsRefs) {
+    const rel = sanitizeRelPath(ref[1]);
+    const jsBuffer = rel ? payloads.get(rel) : null;
+    if (!jsBuffer) continue;
+    const js = sanitizeInlineJs(decoder.decode(jsBuffer));
+    inlineJsBlocks.push(js);
+    html = html.replace(ref[0], '');
+  }
+
+  html = html.replace(/<link[^>]+rel="icon"[^>]*>\s*/g, '');
+  html = html.replace(/<link[^>]+rel="modulepreload"[^>]*>\s*/g, '');
+
+  if (inlineCssBlocks.length) {
+    html = html.replace('</head>', `${inlineCssBlocks.join('\n')}\n  </head>`);
+  }
+
+  if (inlineJsBlocks.length) {
+    html = html.replace('</body>', `    <script type="module">\n${inlineJsBlocks.join('\n')}\n</script>\n  </body>`);
+  }
+
+  return html;
+}
+
+function sanitizeInlineJs(code: string) {
+  return code
+    .replace(/<\/script/gi, '<\\/script')
+    .replace(/\/\/# sourceMappingURL=.*$/gm, '')
+    .replace(/\/\*# sourceMappingURL=.*?\*\//g, '');
+}
+
+function sanitizeInlineCss(code: string) {
+  return code
+    .replace(/<\/style/gi, '<\\/style')
+    .replace(/\/\*# sourceMappingURL=.*?\*\//g, '');
 }
 
 function sanitizeRelPath(path: string) {

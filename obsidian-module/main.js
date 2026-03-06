@@ -124,6 +124,24 @@ var ArxivStudioObsidianPlugin = class extends import_obsidian.Plugin {
     }
     return null;
   }
+  async resolveEmbeddedHtmlUrl() {
+    const adapter = this.app.vault.adapter;
+    if (typeof adapter.getResourcePath !== "function") return null;
+    const configDir = this.app.vault.configDir;
+    const pluginRoot = (0, import_obsidian.normalizePath)(`${configDir}/plugins`);
+    const id = this.manifest.id;
+    const dir = this.manifest.dir;
+    const candidates = /* @__PURE__ */ new Set();
+    candidates.add(id);
+    if (dir) candidates.add(dir.split("/").pop() || dir);
+    for (const folder of candidates) {
+      const embedded = (0, import_obsidian.normalizePath)(`${pluginRoot}/${folder}/webapp/embedded.html`);
+      if (await this.app.vault.adapter.exists(embedded)) {
+        return adapter.getResourcePath(embedded);
+      }
+    }
+    return null;
+  }
   async loadSettings() {
     const loaded = await this.loadData();
     this.settings = Object.assign({}, DEFAULT_SETTINGS, loaded);
@@ -146,14 +164,16 @@ var ArxivStudioObsidianPlugin = class extends import_obsidian.Plugin {
   }
   async ensureEmbeddedWebappAvailable(showSuccessNotice = false) {
     if (this.settings.runtime !== "embedded") return false;
-    const existing = await this.resolveEmbeddedIndexUrl();
-    if (existing) return true;
-    if (!this.settings.autoDownloadMissingWebapp) return false;
+    const embedded = await this.resolveEmbeddedHtmlUrl();
+    if (embedded) return true;
+    const existingIndex = await this.resolveEmbeddedIndexUrl();
+    if (!this.settings.autoDownloadMissingWebapp) return Boolean(existingIndex);
     if (this.embeddedWebappBootstrapPromise) return this.embeddedWebappBootstrapPromise;
     this.embeddedWebappBootstrapPromise = this.bootstrapEmbeddedWebappFromRemote(showSuccessNotice).finally(() => {
       this.embeddedWebappBootstrapPromise = null;
     });
-    return this.embeddedWebappBootstrapPromise;
+    const downloaded = await this.embeddedWebappBootstrapPromise;
+    return downloaded || Boolean(existingIndex);
   }
   async bootstrapEmbeddedWebappFromRemote(showSuccessNotice = false) {
     const explicitBootstrap = (this.settings.webappBootstrapUrl || "").trim();
@@ -1264,6 +1284,7 @@ async function downloadWebappTreeToPluginFolder(app, manifest, baseUrlRaw) {
   const seen = /* @__PURE__ */ new Set();
   const payloads = /* @__PURE__ */ new Map();
   const decoder = new TextDecoder();
+  const encoder = new TextEncoder();
   while (queue.length > 0) {
     const rel = sanitizeRelPath(queue.shift() || "");
     if (!rel || seen.has(rel)) continue;
@@ -1286,6 +1307,12 @@ async function downloadWebappTreeToPluginFolder(app, manifest, baseUrlRaw) {
     }
   }
   if (!payloads.has("embedded.html") && !payloads.has("index.html")) return false;
+  if (!payloads.has("embedded.html") && payloads.has("index.html")) {
+    const embedded = buildEmbeddedHtmlFromPayloads(payloads, decoder);
+    if (embedded) {
+      payloads.set("embedded.html", encoder.encode(embedded).buffer);
+    }
+  }
   const adapter = app.vault.adapter;
   const configDir = app.vault.configDir;
   const folder = getPluginInstallFolderName(manifest);
@@ -1298,6 +1325,52 @@ async function downloadWebappTreeToPluginFolder(app, manifest, baseUrlRaw) {
     await adapter.writeBinary(target, buf);
   }
   return true;
+}
+function buildEmbeddedHtmlFromPayloads(payloads, decoder) {
+  const indexBuffer = payloads.get("index.html");
+  if (!indexBuffer) return null;
+  let html = decoder.decode(indexBuffer);
+  const cssRefs = [...html.matchAll(/<link[^>]*rel="stylesheet"[^>]*href="([^\"]+)"[^>]*>/g)];
+  const inlineCssBlocks = [];
+  for (const ref of cssRefs) {
+    const rel = sanitizeRelPath(ref[1]);
+    const cssBuffer = rel ? payloads.get(rel) : null;
+    if (!cssBuffer) continue;
+    const css = sanitizeInlineCss(decoder.decode(cssBuffer));
+    inlineCssBlocks.push(`<style>
+${css}
+</style>`);
+    html = html.replace(ref[0], "");
+  }
+  const jsRefs = [...html.matchAll(/<script[^>]*type="module"[^>]*src="([^\"]+)"[^>]*><\/script>/g)];
+  const inlineJsBlocks = [];
+  for (const ref of jsRefs) {
+    const rel = sanitizeRelPath(ref[1]);
+    const jsBuffer = rel ? payloads.get(rel) : null;
+    if (!jsBuffer) continue;
+    const js = sanitizeInlineJs(decoder.decode(jsBuffer));
+    inlineJsBlocks.push(js);
+    html = html.replace(ref[0], "");
+  }
+  html = html.replace(/<link[^>]+rel="icon"[^>]*>\s*/g, "");
+  html = html.replace(/<link[^>]+rel="modulepreload"[^>]*>\s*/g, "");
+  if (inlineCssBlocks.length) {
+    html = html.replace("</head>", `${inlineCssBlocks.join("\n")}
+  </head>`);
+  }
+  if (inlineJsBlocks.length) {
+    html = html.replace("</body>", `    <script type="module">
+${inlineJsBlocks.join("\n")}
+<\/script>
+  </body>`);
+  }
+  return html;
+}
+function sanitizeInlineJs(code) {
+  return code.replace(/<\/script/gi, "<\\/script").replace(/\/\/# sourceMappingURL=.*$/gm, "").replace(/\/\*# sourceMappingURL=.*?\*\//g, "");
+}
+function sanitizeInlineCss(code) {
+  return code.replace(/<\/style/gi, "<\\/style").replace(/\/\*# sourceMappingURL=.*?\*\//g, "");
 }
 function sanitizeRelPath(path) {
   const clean = path.replace(/[#?].*$/, "").replace(/\\/g, "/").replace(/^\/+/, "").trim();
