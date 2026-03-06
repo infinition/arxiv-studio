@@ -215,8 +215,7 @@ export default class ArxivStudioObsidianPlugin extends Plugin {
     this.embeddedWebappBootstrapPromise = this.bootstrapEmbeddedWebappFromRemote(showSuccessNotice).finally(() => {
       this.embeddedWebappBootstrapPromise = null;
     });
-    const downloaded = await this.embeddedWebappBootstrapPromise;
-    return downloaded || Boolean(existingIndex);
+    return this.embeddedWebappBootstrapPromise;
   }
 
   async bootstrapEmbeddedWebappFromRemote(showSuccessNotice = false) {
@@ -1714,6 +1713,10 @@ function isLikelyTextFile(relPath: string, contentType: string) {
 
 function extractRelativeRefsFromText(text: string, currentUrl: URL, baseUrl: URL) {
   const refs = new Set<string>();
+  const pathname = currentUrl.pathname.toLowerCase();
+  const isHtml = pathname.endsWith('.html') || pathname.endsWith('.htm');
+  const isCss = pathname.endsWith('.css');
+  const isJs = /\.(js|mjs|cjs)$/.test(pathname);
 
   const addRef = (candidate: string) => {
     const raw = candidate.trim().replace(/^['"]|['"]$/g, '');
@@ -1731,17 +1734,27 @@ function extractRelativeRefsFromText(text: string, currentUrl: URL, baseUrl: URL
     if (rel) refs.add(rel);
   };
 
-  const htmlAttr = /(src|href)\s*=\s*["']([^"']+)["']/gi;
   let m: RegExpExecArray | null;
-  while ((m = htmlAttr.exec(text)) !== null) addRef(m[2]);
 
-  const cssUrl = /url\(([^)]+)\)/gi;
-  while ((m = cssUrl.exec(text)) !== null) addRef(m[1]);
+  if (isHtml) {
+    const htmlAttr = /(src|href)\s*=\s*["']([^"']+)["']/gi;
+    while ((m = htmlAttr.exec(text)) !== null) addRef(m[2]);
+  }
 
-  const anyQuotedPath = /["'`]([^"'`]+)["'`]/g;
-  while ((m = anyQuotedPath.exec(text)) !== null) {
-    const v = m[1];
-    if (/^(\.?\/|assets\/)/.test(v)) addRef(v);
+  if (isCss) {
+    const cssUrl = /url\(([^)]+)\)/gi;
+    while ((m = cssUrl.exec(text)) !== null) addRef(m[1]);
+  }
+
+  if (isJs) {
+    const dynamicImport = /import\(\s*["']([^"']+)["']\s*\)/g;
+    while ((m = dynamicImport.exec(text)) !== null) addRef(m[1]);
+
+    const fromImport = /\bfrom\s*["']([^"']+)["']/g;
+    while ((m = fromImport.exec(text)) !== null) addRef(m[1]);
+
+    const workerOrUrl = /new\s+URL\(\s*["']([^"']+)["']/g;
+    while ((m = workerOrUrl.exec(text)) !== null) addRef(m[1]);
   }
 
   return Array.from(refs);

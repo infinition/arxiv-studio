@@ -172,8 +172,7 @@ var ArxivStudioObsidianPlugin = class extends import_obsidian.Plugin {
     this.embeddedWebappBootstrapPromise = this.bootstrapEmbeddedWebappFromRemote(showSuccessNotice).finally(() => {
       this.embeddedWebappBootstrapPromise = null;
     });
-    const downloaded = await this.embeddedWebappBootstrapPromise;
-    return downloaded || Boolean(existingIndex);
+    return this.embeddedWebappBootstrapPromise;
   }
   async bootstrapEmbeddedWebappFromRemote(showSuccessNotice = false) {
     const explicitBootstrap = (this.settings.webappBootstrapUrl || "").trim();
@@ -1386,6 +1385,10 @@ function isLikelyTextFile(relPath, contentType) {
 }
 function extractRelativeRefsFromText(text, currentUrl, baseUrl) {
   const refs = /* @__PURE__ */ new Set();
+  const pathname = currentUrl.pathname.toLowerCase();
+  const isHtml = pathname.endsWith(".html") || pathname.endsWith(".htm");
+  const isCss = pathname.endsWith(".css");
+  const isJs = /\.(js|mjs|cjs)$/.test(pathname);
   const addRef = (candidate) => {
     const raw = candidate.trim().replace(/^['"]|['"]$/g, "");
     if (!raw || raw.startsWith("data:") || raw.startsWith("blob:") || raw.startsWith("mailto:")) return;
@@ -1401,15 +1404,22 @@ function extractRelativeRefsFromText(text, currentUrl, baseUrl) {
     const rel = sanitizeRelPath(resolved.pathname.slice(basePath.length));
     if (rel) refs.add(rel);
   };
-  const htmlAttr = /(src|href)\s*=\s*["']([^"']+)["']/gi;
   let m;
-  while ((m = htmlAttr.exec(text)) !== null) addRef(m[2]);
-  const cssUrl = /url\(([^)]+)\)/gi;
-  while ((m = cssUrl.exec(text)) !== null) addRef(m[1]);
-  const anyQuotedPath = /["'`]([^"'`]+)["'`]/g;
-  while ((m = anyQuotedPath.exec(text)) !== null) {
-    const v = m[1];
-    if (/^(\.?\/|assets\/)/.test(v)) addRef(v);
+  if (isHtml) {
+    const htmlAttr = /(src|href)\s*=\s*["']([^"']+)["']/gi;
+    while ((m = htmlAttr.exec(text)) !== null) addRef(m[2]);
+  }
+  if (isCss) {
+    const cssUrl = /url\(([^)]+)\)/gi;
+    while ((m = cssUrl.exec(text)) !== null) addRef(m[1]);
+  }
+  if (isJs) {
+    const dynamicImport = /import\(\s*["']([^"']+)["']\s*\)/g;
+    while ((m = dynamicImport.exec(text)) !== null) addRef(m[1]);
+    const fromImport = /\bfrom\s*["']([^"']+)["']/g;
+    while ((m = fromImport.exec(text)) !== null) addRef(m[1]);
+    const workerOrUrl = /new\s+URL\(\s*["']([^"']+)["']/g;
+    while ((m = workerOrUrl.exec(text)) !== null) addRef(m[1]);
   }
   return Array.from(refs);
 }
