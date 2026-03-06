@@ -96,18 +96,6 @@ export default class ArxivStudioObsidianPlugin extends Plugin {
     });
   }
 
-  async ensureVaultFolderExists(app: App, folderPath: string) {
-    const adapter = app.vault.adapter;
-    const parts = normalizePath(folderPath).split('/').filter(Boolean);
-    let current = '';
-    for (const part of parts) {
-      current = current ? `${current}/${part}` : part;
-      if (!(await adapter.exists(current))) {
-        await adapter.mkdir(current);
-      }
-    }
-  }
-
   onunload() {
     this.app.workspace.detachLeavesOfType(VIEW_TYPE_ARXIV);
     this.liveViews.clear();
@@ -300,18 +288,6 @@ class ArxivStudioAppView extends ItemView {
     this.reloadFrame().catch((e) => new Notice(`ArXiv Studio: ${String(e)}`));
   }
 
-  async ensureVaultFolderExists(folderPath: string) {
-    const adapter = this.app.vault.adapter;
-    const parts = normalizePath(folderPath).split('/').filter(Boolean);
-    let current = '';
-    for (const part of parts) {
-      current = current ? `${current}/${part}` : part;
-      if (!(await adapter.exists(current))) {
-        await adapter.mkdir(current);
-      }
-    }
-  }
-
   async onClose() {
     this.plugin.liveViews.delete(this);
     this.frameReady = false;
@@ -372,18 +348,6 @@ class ArxivStudioAppView extends ItemView {
     this.applyObsidianThemeToIframe();
     this.flushQueue();
     this.startVaultMirrorSync();
-  }
-
-  async ensureVaultFolderExists(folderPath: string) {
-    const adapter = this.app.vault.adapter;
-    const parts = normalizePath(folderPath).split('/').filter(Boolean);
-    let current = '';
-    for (const part of parts) {
-      current = current ? `${current}/${part}` : part;
-      if (!(await adapter.exists(current))) {
-        await adapter.mkdir(current);
-      }
-    }
   }
 
   postDrop(payload: ObsidianDropPayload) {
@@ -1564,6 +1528,83 @@ function looksLikeMarkdownText(value: string) {
 
 function ensureTrailingSlash(url: string) {
   return url.endsWith('/') ? url : `${url}/`;
+}
+
+function getPluginInstallFolderName(manifest: { id: string; dir?: string }) {
+  if (manifest.dir) {
+    const tail = manifest.dir.split('/').filter(Boolean).pop();
+    if (tail) return tail;
+  }
+  return manifest.id;
+}
+
+async function ensureVaultFolderExists(app: App, folderPath: string) {
+  const adapter = app.vault.adapter;
+  const parts = normalizePath(folderPath).split('/').filter(Boolean);
+  let current = '';
+  for (const part of parts) {
+    current = current ? `${current}/${part}` : part;
+    if (!(await adapter.exists(current))) {
+      await adapter.mkdir(current);
+    }
+  }
+}
+
+async function downloadWebappTreeToPluginFolder(
+  app: App,
+  manifest: { id: string; dir?: string },
+  baseUrlRaw: string
+) {
+  const baseUrl = ensureTrailingSlash(baseUrlRaw);
+  const base = new URL(baseUrl);
+  const queue: string[] = ['embedded.html', 'index.html'];
+  const seen = new Set<string>();
+  const payloads = new Map<string, ArrayBuffer>();
+  const decoder = new TextDecoder();
+
+  while (queue.length > 0) {
+    const rel = sanitizeRelPath(queue.shift() || '');
+    if (!rel || seen.has(rel)) continue;
+    seen.add(rel);
+
+    const url = new URL(rel, base);
+    const res = await fetch(url.toString(), { cache: 'no-store' });
+    if (!res.ok) {
+      if (rel === 'embedded.html' || rel === 'index.html') continue;
+      throw new Error(`HTTP ${res.status} while fetching ${url.toString()}`);
+    }
+
+    const buf = await res.arrayBuffer();
+    payloads.set(rel, buf);
+
+    if (!isLikelyTextFile(rel, res.headers.get('content-type') || '')) continue;
+    const text = decoder.decode(buf);
+    const refs = extractRelativeRefsFromText(text, url, base);
+    for (const next of refs) {
+      const clean = sanitizeRelPath(next);
+      if (!clean || seen.has(clean)) continue;
+      queue.push(clean);
+    }
+  }
+
+  if (!payloads.has('embedded.html') && !payloads.has('index.html')) return false;
+
+  const adapter = app.vault.adapter as {
+    writeBinary: (path: string, data: ArrayBuffer) => Promise<void>;
+  };
+  const configDir = app.vault.configDir;
+  const folder = getPluginInstallFolderName(manifest);
+  const root = normalizePath(`${configDir}/plugins/${folder}/webapp`);
+  await ensureVaultFolderExists(app, root);
+
+  for (const [rel, buf] of payloads.entries()) {
+    const target = normalizePath(`${root}/${rel}`);
+    const dir = dirnamePosix(target);
+    if (dir) await ensureVaultFolderExists(app, dir);
+    await adapter.writeBinary(target, buf);
+  }
+
+  return true;
 }
 
 function sanitizeRelPath(path: string) {
