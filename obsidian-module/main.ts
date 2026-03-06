@@ -128,27 +128,47 @@ export default class ArxivStudioObsidianPlugin extends Plugin {
     for (const view of this.liveViews) view.postDrop(payload);
   }
 
-  async resolveEmbeddedIndexUrl() {
-    const adapter = this.app.vault.adapter as { getResourcePath?: (path: string) => string };
-    if (typeof adapter.getResourcePath !== 'function') return null;
-
+  async getEmbeddedWebappCandidates() {
     const configDir = this.app.vault.configDir;
     const pluginRoot = normalizePath(`${configDir}/plugins`);
     const id = this.manifest.id;
     const dir = (this.manifest as unknown as { dir?: string }).dir;
 
-    const candidates = new Set<string>();
-    candidates.add(id);
-    if (dir) candidates.add(dir.split('/').pop() || dir);
+    const folders = new Set<string>();
+    folders.add(id);
+    if (dir) folders.add(dir.split('/').pop() || dir);
 
-    for (const folder of candidates) {
-      const embedded = normalizePath(`${pluginRoot}/${folder}/webapp/embedded.html`);
-      if (await this.app.vault.adapter.exists(embedded)) {
-        return adapter.getResourcePath(embedded);
+    const candidates: Array<{ embedded: string; index: string }> = [];
+    for (const folder of folders) {
+      candidates.push({
+        embedded: normalizePath(`${pluginRoot}/${folder}/webapp/embedded.html`),
+        index: normalizePath(`${pluginRoot}/${folder}/webapp/index.html`),
+      });
+    }
+    return candidates;
+  }
+
+  async isUsableEmbeddedHtml(path: string) {
+    try {
+      const adapter = this.app.vault.adapter as { read: (path: string) => Promise<string> };
+      const raw = await adapter.read(path);
+      return !looksLikeDevHtmlEntry(raw);
+    } catch {
+      return false;
+    }
+  }
+
+  async resolveEmbeddedIndexUrl() {
+    const adapter = this.app.vault.adapter as { getResourcePath?: (path: string) => string };
+    if (typeof adapter.getResourcePath !== 'function') return null;
+
+    const candidates = await this.getEmbeddedWebappCandidates();
+    for (const candidate of candidates) {
+      if (await this.app.vault.adapter.exists(candidate.embedded) && await this.isUsableEmbeddedHtml(candidate.embedded)) {
+        return adapter.getResourcePath(candidate.embedded);
       }
-      const index = normalizePath(`${pluginRoot}/${folder}/webapp/index.html`);
-      if (await this.app.vault.adapter.exists(index)) {
-        return adapter.getResourcePath(index);
+      if (await this.app.vault.adapter.exists(candidate.index) && await this.isUsableEmbeddedHtml(candidate.index)) {
+        return adapter.getResourcePath(candidate.index);
       }
     }
 
@@ -159,19 +179,10 @@ export default class ArxivStudioObsidianPlugin extends Plugin {
     const adapter = this.app.vault.adapter as { getResourcePath?: (path: string) => string };
     if (typeof adapter.getResourcePath !== 'function') return null;
 
-    const configDir = this.app.vault.configDir;
-    const pluginRoot = normalizePath(`${configDir}/plugins`);
-    const id = this.manifest.id;
-    const dir = (this.manifest as unknown as { dir?: string }).dir;
-
-    const candidates = new Set<string>();
-    candidates.add(id);
-    if (dir) candidates.add(dir.split('/').pop() || dir);
-
-    for (const folder of candidates) {
-      const embedded = normalizePath(`${pluginRoot}/${folder}/webapp/embedded.html`);
-      if (await this.app.vault.adapter.exists(embedded)) {
-        return adapter.getResourcePath(embedded);
+    const candidates = await this.getEmbeddedWebappCandidates();
+    for (const candidate of candidates) {
+      if (await this.app.vault.adapter.exists(candidate.embedded) && await this.isUsableEmbeddedHtml(candidate.embedded)) {
+        return adapter.getResourcePath(candidate.embedded);
       }
     }
 
@@ -1691,6 +1702,13 @@ function sanitizeInlineCss(code: string) {
   return code
     .replace(/<\/style/gi, '<\\/style')
     .replace(/\/\*# sourceMappingURL=.*?\*\//g, '');
+}
+
+function looksLikeDevHtmlEntry(html: string) {
+  const normalized = html.replace(/\s+/g, ' ');
+  return /src\s*=\s*["'][^"']*\/src\/main\.(t|j)sx?["']/i.test(normalized)
+    || /href\s*=\s*["'][^"']*\/src\//i.test(normalized)
+    || /type="module"\s+src="\/src\/main\.tsx"/i.test(normalized);
 }
 
 function sanitizeRelPath(path: string) {

@@ -102,24 +102,42 @@ var ArxivStudioObsidianPlugin = class extends import_obsidian.Plugin {
   broadcastDrop(payload) {
     for (const view of this.liveViews) view.postDrop(payload);
   }
-  async resolveEmbeddedIndexUrl() {
-    const adapter = this.app.vault.adapter;
-    if (typeof adapter.getResourcePath !== "function") return null;
+  async getEmbeddedWebappCandidates() {
     const configDir = this.app.vault.configDir;
     const pluginRoot = (0, import_obsidian.normalizePath)(`${configDir}/plugins`);
     const id = this.manifest.id;
     const dir = this.manifest.dir;
-    const candidates = /* @__PURE__ */ new Set();
-    candidates.add(id);
-    if (dir) candidates.add(dir.split("/").pop() || dir);
-    for (const folder of candidates) {
-      const embedded = (0, import_obsidian.normalizePath)(`${pluginRoot}/${folder}/webapp/embedded.html`);
-      if (await this.app.vault.adapter.exists(embedded)) {
-        return adapter.getResourcePath(embedded);
+    const folders = /* @__PURE__ */ new Set();
+    folders.add(id);
+    if (dir) folders.add(dir.split("/").pop() || dir);
+    const candidates = [];
+    for (const folder of folders) {
+      candidates.push({
+        embedded: (0, import_obsidian.normalizePath)(`${pluginRoot}/${folder}/webapp/embedded.html`),
+        index: (0, import_obsidian.normalizePath)(`${pluginRoot}/${folder}/webapp/index.html`)
+      });
+    }
+    return candidates;
+  }
+  async isUsableEmbeddedHtml(path) {
+    try {
+      const adapter = this.app.vault.adapter;
+      const raw = await adapter.read(path);
+      return !looksLikeDevHtmlEntry(raw);
+    } catch {
+      return false;
+    }
+  }
+  async resolveEmbeddedIndexUrl() {
+    const adapter = this.app.vault.adapter;
+    if (typeof adapter.getResourcePath !== "function") return null;
+    const candidates = await this.getEmbeddedWebappCandidates();
+    for (const candidate of candidates) {
+      if (await this.app.vault.adapter.exists(candidate.embedded) && await this.isUsableEmbeddedHtml(candidate.embedded)) {
+        return adapter.getResourcePath(candidate.embedded);
       }
-      const index = (0, import_obsidian.normalizePath)(`${pluginRoot}/${folder}/webapp/index.html`);
-      if (await this.app.vault.adapter.exists(index)) {
-        return adapter.getResourcePath(index);
+      if (await this.app.vault.adapter.exists(candidate.index) && await this.isUsableEmbeddedHtml(candidate.index)) {
+        return adapter.getResourcePath(candidate.index);
       }
     }
     return null;
@@ -127,17 +145,10 @@ var ArxivStudioObsidianPlugin = class extends import_obsidian.Plugin {
   async resolveEmbeddedHtmlUrl() {
     const adapter = this.app.vault.adapter;
     if (typeof adapter.getResourcePath !== "function") return null;
-    const configDir = this.app.vault.configDir;
-    const pluginRoot = (0, import_obsidian.normalizePath)(`${configDir}/plugins`);
-    const id = this.manifest.id;
-    const dir = this.manifest.dir;
-    const candidates = /* @__PURE__ */ new Set();
-    candidates.add(id);
-    if (dir) candidates.add(dir.split("/").pop() || dir);
-    for (const folder of candidates) {
-      const embedded = (0, import_obsidian.normalizePath)(`${pluginRoot}/${folder}/webapp/embedded.html`);
-      if (await this.app.vault.adapter.exists(embedded)) {
-        return adapter.getResourcePath(embedded);
+    const candidates = await this.getEmbeddedWebappCandidates();
+    for (const candidate of candidates) {
+      if (await this.app.vault.adapter.exists(candidate.embedded) && await this.isUsableEmbeddedHtml(candidate.embedded)) {
+        return adapter.getResourcePath(candidate.embedded);
       }
     }
     return null;
@@ -1370,6 +1381,10 @@ function sanitizeInlineJs(code) {
 }
 function sanitizeInlineCss(code) {
   return code.replace(/<\/style/gi, "<\\/style").replace(/\/\*# sourceMappingURL=.*?\*\//g, "");
+}
+function looksLikeDevHtmlEntry(html) {
+  const normalized = html.replace(/\s+/g, " ");
+  return /src\s*=\s*["'][^"']*\/src\/main\.(t|j)sx?["']/i.test(normalized) || /href\s*=\s*["'][^"']*\/src\//i.test(normalized) || /type="module"\s+src="\/src\/main\.tsx"/i.test(normalized);
 }
 function sanitizeRelPath(path) {
   const clean = path.replace(/[#?].*$/, "").replace(/\\/g, "/").replace(/^\/+/, "").trim();
