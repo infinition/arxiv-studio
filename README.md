@@ -9,6 +9,7 @@ It focuses on fast visual editing, arXiv-oriented structure, and local-first per
 
 ## Current Features
 
+
 ### Document editing
 - Element types: `text`, `markdownobs`, `image`, `math`, `table`, `line`, `shape`, `connector`, `toc`, `glossary`, `references`
 - Rich text tools: H1/H2/H3, bold, italic, underline, lists, checkboxes, alignment
