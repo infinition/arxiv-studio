@@ -163,6 +163,22 @@ npm run build:all
   - Supports tags with or without `v` prefix
   - Publishes BRAT-compatible plugin assets (`manifest.json`, `main.js`, `styles.css`, `versions.json`)
 
+## GitHub Pages Deployment
+
+For this repository, GitHub Pages must use **GitHub Actions** as its source.
+
+If Pages is set to **Deploy from a branch**, GitHub serves the raw repository `index.html` instead of the Vite `dist/` output. That produces a blank page because the browser receives the unbuilt app entrypoint instead of the generated bundle.
+
+Required repository setting:
+
+- GitHub repository Settings -> Pages -> Source: `GitHub Actions`
+
+Expected behavior after a successful deployment:
+
+- `https://infinition.github.io/arxiv-studio/` serves the generated `dist/index.html`
+- bundled files load from `./assets/...`
+- `arxiv-studio-icon.svg` resolves under the repository subpath
+
 ## Versioning Note
 
 For Obsidian releases, `manifest.json` version must match the git tag version without `v`.
